@@ -15,12 +15,11 @@ class Settings(BaseSettings):
     strava_redirect_uri: str = "http://localhost:8000/oauth/strava/callback"
 
     gemini_api_key: str = ""
+    # Smartest usable model first; lite models are last-resort only.
     gemini_model: str = "gemini-3.5-flash"
-    gemini_fallback_model: str = "gemini-3.5-flash-lite"
+    gemini_fallback_model: str = "gemini-3-flash-preview"
     # Comma-separated extra models tried after primary/fallback on 503/404
-    gemini_model_cascade: str = (
-        "gemini-3.5-flash-lite,gemini-3-flash-preview,gemini-flash-lite-latest"
-    )
+    gemini_model_cascade: str = "gemini-3.5-flash-lite,gemini-flash-lite-latest"
 
     public_base_url: str = "http://localhost:8000"
     redis_url: str = "redis://localhost:6379/0"

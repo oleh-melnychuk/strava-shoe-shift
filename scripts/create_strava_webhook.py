@@ -25,8 +25,25 @@ SUBSCRIPTIONS_URL = "https://www.strava.com/api/v3/push_subscriptions"
 
 def create_subscription() -> None:
     settings = get_settings()
-    callback_url = f"{settings.public_base_url.rstrip('/')}/strava/webhook"
+    callback_url = f"{settings.public_base_url.strip().rstrip('/')}/strava/webhook"
+    print(f"Creating subscription with callback_url={callback_url!r}")
+    print(f"verify_token={settings.strava_verify_token!r}")
     with httpx.Client(timeout=30.0) as client:
+        # Preflight: what would Strava see?
+        try:
+            probe = client.get(
+                callback_url,
+                params={
+                    "hub.mode": "subscribe",
+                    "hub.challenge": "preflight",
+                    "hub.verify_token": settings.strava_verify_token,
+                },
+                timeout=10.0,
+            )
+            print(f"preflight status={probe.status_code} body={probe.content!r} ct={probe.headers.get('content-type')}")
+        except Exception as exc:
+            print(f"preflight failed: {exc}")
+
         response = client.post(
             SUBSCRIPTIONS_URL,
             data={

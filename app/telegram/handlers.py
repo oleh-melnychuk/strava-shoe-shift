@@ -198,6 +198,8 @@ async def shoe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             shoe_id,
             pending.run_type,
             shoe_name=shoe_name,
+            notify=True,
+            reason=f"Confirmed by you for a {pending.run_type} run.",
         )
     except Exception:
         logger.exception("Failed to apply shoe choice")

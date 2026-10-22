@@ -17,11 +17,12 @@ from app.store import (
     clear_processed,
     create_pending,
     get_processed,
+    list_preferences,
     save_processed,
 )
 from app.strava.client import get_client_for_user, get_user_by_strava_athlete_id
 
-RECENT_HISTORY_LIMIT = 20
+RECENT_HISTORY_LIMIT = 50
 
 logger = logging.getLogger(__name__)
 
@@ -37,8 +38,101 @@ async def _notify(bot: Bot, chat_id: int, text: str, **kwargs: Any) -> None:
         logger.exception("Failed to send Telegram notification")
 
 
+def _assignment_message(
+    activity_id: int,
+    activity_name: str | None,
+    run_type: str,
+    shoe_name: str | None,
+    *,
+    shoe_id: str | None = None,
+    previous_shoe_name: str | None = None,
+    previous_shoe_id: str | None = None,
+    confidence: float | None = None,
+    reason: str | None = None,
+    prefix: str = "",
+) -> str:
+    name = activity_name or f"Activity {activity_id}"
+    changed = bool(previous_shoe_id and shoe_id and str(previous_shoe_id) != str(shoe_id))
+    same = bool(previous_shoe_id and shoe_id and str(previous_shoe_id) == str(shoe_id))
+    title = "Shoes changed" if changed else ("Shoes confirmed" if same else "Shoes assigned")
+    lines = [
+        f"{_esc(prefix)}👟 <b>{title}</b>",
+        f"<b>{_esc(name)}</b> — {_esc(run_type)} run",
+    ]
+    if changed:
+        lines.append(f"{_esc(previous_shoe_name or previous_shoe_id)} → <b>{_esc(shoe_name or shoe_id)}</b>")
+    else:
+        lines.append(f"<b>{_esc(shoe_name or shoe_id)}</b>")
+    if confidence is not None:
+        lines.append(f"Confidence: {confidence:.0%}")
+    if reason:
+        lines.append(_esc(reason))
+    lines.append(f"https://www.strava.com/activities/{activity_id}")
+    return "\n".join(lines)
+
+
+async def notify_shoe_assigned(
+    user: User,
+    activity_id: int,
+    shoe_id: str,
+    shoe_name: str | None,
+    run_type: str,
+    *,
+    activity_name: str | None = None,
+    previous_shoe_name: str | None = None,
+    previous_shoe_id: str | None = None,
+    confidence: float | None = None,
+    reason: str | None = None,
+    prefix: str = "",
+    bot: Bot | None = None,
+) -> None:
+    settings = get_settings()
+    bot = bot or Bot(token=settings.telegram_bot_token)
+    await _notify(
+        bot,
+        user.telegram_chat_id,
+        _assignment_message(
+            activity_id,
+            activity_name,
+            run_type,
+            shoe_name,
+            shoe_id=shoe_id,
+            previous_shoe_name=previous_shoe_name,
+            previous_shoe_id=previous_shoe_id,
+            confidence=confidence,
+            reason=reason,
+            prefix=prefix,
+        ),
+    )
+
+
 def _meters_to_km(meters: float | int | None) -> float:
     return round(float(meters or 0) / 1000.0, 1)
+
+
+def _primary_shoe_id(shoes: list[dict[str, Any]]) -> str | None:
+    for shoe in shoes:
+        if shoe.get("primary") and shoe.get("id"):
+            return str(shoe["id"])
+    return None
+
+
+def _is_strava_default_gear(gear_id: str | None, primary_shoe_id: str | None) -> bool:
+    """Strava auto-tags uploads with the athlete's primary (default) shoe."""
+    return bool(gear_id and primary_shoe_id and str(gear_id) == primary_shoe_id)
+
+
+def _should_skip_geared(
+    gear_id: str | None,
+    primary_shoe_id: str | None,
+    skip_if_geared: bool,
+    *,
+    force: bool = False,
+) -> bool:
+    if force or not gear_id or not skip_if_geared:
+        return False
+    # Default gear is not a deliberate choice — let the bot reassign it.
+    return not _is_strava_default_gear(gear_id, primary_shoe_id)
 
 
 def _shoe_payload(shoes: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -95,6 +189,21 @@ def _usage_trends(activities: list[dict[str, Any]], shoe_names: dict[str, str]) 
     return trends
 
 
+async def _load_preferences(user_id: int) -> list[dict[str, Any]]:
+    rows = await list_preferences(user_id)
+    return [
+        {
+            "run_type": r.run_type,
+            "shoe_id": r.shoe_id,
+            "shoe_name": r.shoe_name,
+            "accept_count": r.accept_count,
+            "reject_count": r.reject_count,
+            "updated_at": r.updated_at,
+        }
+        for r in rows
+    ]
+
+
 async def _mark_processed(
     user_id: int,
     activity_id: int,
@@ -132,8 +241,23 @@ async def apply_shoe_choice(
     run_type: str,
     shoe_name: str | None = None,
     confidence: float | None = None,
+    *,
+    notify: bool = False,
+    activity_name: str | None = None,
+    previous_shoe_id: str | None = None,
+    previous_shoe_name: str | None = None,
+    reason: str | None = None,
+    prefix: str = "",
+    bot: Bot | None = None,
 ) -> dict[str, Any]:
     client = await get_client_for_user(user)
+    if notify and (activity_name is None or previous_shoe_id is None):
+        try:
+            current = await client.get_activity(activity_id)
+            activity_name = activity_name or current.get("name")
+            previous_shoe_id = previous_shoe_id or current.get("gear_id")
+        except Exception:
+            logger.exception("Could not load activity %s before assignment notify", activity_id)
     updated = await client.update_activity_gear(activity_id, shoe_id)
     await _mark_processed(
         user.id,
@@ -143,6 +267,21 @@ async def apply_shoe_choice(
         confidence,
         status="assigned",
     )
+    if notify:
+        await notify_shoe_assigned(
+            user,
+            activity_id,
+            shoe_id,
+            shoe_name,
+            run_type,
+            activity_name=activity_name,
+            previous_shoe_name=previous_shoe_name,
+            previous_shoe_id=previous_shoe_id,
+            confidence=confidence,
+            reason=reason,
+            prefix=prefix,
+            bot=bot,
+        )
     return updated
 
 
@@ -156,39 +295,75 @@ async def process_activity_for_user(user: User, activity_id: int, *, force: bool
         logger.info("Activity %s already processed", activity_id)
         return
 
+    logger.info(
+        "Processing activity %s for telegram user %s (force=%s)",
+        activity_id,
+        user.telegram_user_id,
+        force,
+    )
     client = await get_client_for_user(user)
     activity = await client.get_activity(activity_id)
     sport = activity.get("type") or activity.get("sport_type")
     if sport not in {"Run", "TrailRun", "VirtualRun"}:
+        logger.info("Activity %s ignored: not a run (type=%s)", activity_id, sport)
         await _mark_processed(user.id, activity_id, None, None, None, "ignored_non_run")
-        return
-
-    if not force and activity.get("gear_id") and user.skip_if_geared:
-        await _mark_processed(
-            user.id,
-            activity_id,
-            None,
-            activity.get("gear_id"),
-            None,
-            "skipped_already_geared",
-        )
         return
 
     athlete = await client.get_athlete()
     shoes_raw = athlete.get("shoes") or []
     shoes = _shoe_payload(shoes_raw)
     shoe_names = {s["id"]: s["name"] for s in shoes}
+    primary_shoe_id = _primary_shoe_id(shoes)
+    gear_id = activity.get("gear_id")
 
-    # Pull enough activities to get ~20 runs after filtering non-runs.
-    recent_raw = await client.list_activities(page=1, per_page=40)
+    if _is_strava_default_gear(gear_id, primary_shoe_id):
+        logger.info(
+            "Activity %s has Strava default gear %s (%s); will reassign",
+            activity_id,
+            gear_id,
+            shoe_names.get(str(gear_id), gear_id),
+        )
+    elif _should_skip_geared(gear_id, primary_shoe_id, user.skip_if_geared, force=force):
+        logger.info(
+            "Activity %s skipped: already geared %s (%s) and skip_if_geared=true",
+            activity_id,
+            gear_id,
+            shoe_names.get(str(gear_id), gear_id),
+        )
+        await _mark_processed(
+            user.id,
+            activity_id,
+            None,
+            gear_id,
+            None,
+            "skipped_already_geared",
+        )
+        return
+    elif gear_id:
+        logger.info(
+            "Activity %s already geared %s; proceeding (force=%s, skip_if_geared=%s)",
+            activity_id,
+            gear_id,
+            force,
+            user.skip_if_geared,
+        )
+
+    # Pull enough activities to get ~50 runs after filtering non-runs.
+    recent_raw = await client.list_activities(page=1, per_page=100)
     # Exclude the activity we are assigning from history so we don't echo its gear.
     recent_raw = [a for a in recent_raw if a.get("id") != activity_id]
+    recent_runs = [
+        a
+        for a in recent_raw
+        if (a.get("type") or a.get("sport_type")) in {"Run", "TrailRun", "VirtualRun"}
+    ][:RECENT_HISTORY_LIMIT]
     recent_activities = build_recent_activity_context(
-        recent_raw, shoe_names, limit=RECENT_HISTORY_LIMIT
+        recent_runs, shoe_names, limit=RECENT_HISTORY_LIMIT
     )
-    trends = _usage_trends(recent_raw[: RECENT_HISTORY_LIMIT * 2], shoe_names)
+    trends = _usage_trends(recent_runs, shoe_names)
+    preferences = await _load_preferences(user.id)
 
-    recommendation = await recommend_shoe(activity, shoes, recent_activities, trends)
+    recommendation = await recommend_shoe(activity, shoes, recent_activities, trends, preferences)
     run_type = normalize_run_type(recommendation.run_type)
     shoe_id = recommendation.shoe_id
     confidence = float(recommendation.confidence)
@@ -207,15 +382,13 @@ async def process_activity_for_user(user: User, activity_id: int, *, force: bool
             run_type,
             shoe_name=shoe_name,
             confidence=confidence,
-        )
-        await _notify(
-            bot,
-            user.telegram_chat_id,
-            (
-                f"{_esc(prefix)}Assigned <b>{_esc(shoe_name)}</b> for your "
-                f"<b>{_esc(run_type)}</b> run \"{_esc(activity_name)}\" "
-                f"(confidence {confidence:.0%}).\n{_esc(reason)}"
-            ),
+            notify=True,
+            activity_name=activity_name,
+            previous_shoe_id=gear_id,
+            previous_shoe_name=shoe_names.get(str(gear_id)) if gear_id else None,
+            reason=reason,
+            prefix=prefix,
+            bot=bot,
         )
         return
 
@@ -270,9 +443,9 @@ async def process_activity_for_user(user: User, activity_id: int, *, force: bool
     )
 
 
-async def handle_activity_created(activity_id: int, athlete_id: int) -> None:
+async def handle_activity_created(activity_id: int, athlete_id: int, *, force: bool = False) -> None:
     user = await get_user_by_strava_athlete_id(athlete_id)
     if not user or not user.access_token:
         logger.info("No linked user for athlete %s", athlete_id)
         return
-    await process_activity_for_user(user, activity_id, force=False)
+    await process_activity_for_user(user, activity_id, force=force)

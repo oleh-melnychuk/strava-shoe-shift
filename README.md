@@ -8,9 +8,10 @@ and usage history, updates the activity, and asks you in Telegram when unsure.
 
 - Strava OAuth via `/link` in Telegram
 - Strava `activity.create` webhook pipeline
-- Gemini recommendation with heuristic fallback if no API key
+- Gemini recommendation with heuristic fallback if no API key (confident history/pin picks skip Gemini; 503'd models cool down for 2 min instead of being retried on every run)
 - Confidence threshold (default `0.75`) — auto-assign or inline confirmation
 - Learned preferences from your accept/reject choices
+- Strava's auto-tagged **default (primary) shoe is reassigned**, not skipped; only a manually chosen non-default shoe is respected when `skip_if_geared` is on
 
 ## Setup
 
@@ -64,12 +65,14 @@ python scripts/create_strava_webhook.py view
 3. Upload a run (or create an activity) on Strava
 4. Bot assigns shoes or asks you to confirm
 
-Useful commands: `/shoes`, `/recalc`, `/prefer`, `/prefs`, `/status`
+Use the on-screen buttons (or `/start` to show the menu again):
 
-- `/recalc` — list recent runs and re-run AI shoe assignment
-- Assignment uses your **last 20 Strava runs** (pace/HR/name + shoes), not stored prefs
-- `/prefs clear` — wipe old prefs if they were wrong
-- `/prefer` — optional manual pin only (history remains primary)
+- **Recalc** — pick a recent run and re-assign shoes
+- **Shoes** / **Link Strava** / **Status**
+- **Prefer** — optional manual pin (history remains primary)
+- **Prefs** — view stored prefs; tap **Clear prefs** to wipe them
+
+Assignment uses your **last 50 Strava runs** (pace/HR/name + shoes). Slash commands still work as aliases.
 
 ## Configuration
 
@@ -135,3 +138,4 @@ app/
 scripts/create_strava_webhook.py
 tests/
 ```
+ngrok http 8000 --url https://alia-untransforming-rifely.ngrok-free.dev

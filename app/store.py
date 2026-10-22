@@ -218,7 +218,21 @@ async def set_explicit_preference(
     shoe_id: str,
     shoe_name: str | None,
 ) -> ShoePreference:
-    """Pin a shoe for a run type with strong weight so AI prioritizes it."""
+    """Pin one shoe for a run type, replacing any previous pin for that type."""
+    r = await get_redis()
+    set_key = USER_PREFS.format(user_id=user_id)
+    existing = await list_preferences(user_id)
+    stale = [
+        PREF_KEY.format(user_id=user_id, run_type=p.run_type, shoe_id=p.shoe_id)
+        for p in existing
+        if p.run_type == run_type and p.shoe_id != shoe_id
+    ]
+    if stale:
+        pipe = r.pipeline()
+        for key in stale:
+            pipe.delete(key)
+            pipe.srem(set_key, key)
+        await pipe.execute()
     return await record_preference(
         user_id,
         run_type,

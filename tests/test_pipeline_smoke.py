@@ -60,6 +60,7 @@ async def test_auto_assign_when_confident(monkeypatch):
     monkeypatch.setattr(assign_shoe, "get_user_by_strava_athlete_id", AsyncMock(return_value=user))
     monkeypatch.setattr(assign_shoe, "get_processed", AsyncMock(return_value=None))
     monkeypatch.setattr(assign_shoe, "get_client_for_user", AsyncMock(return_value=fake))
+    monkeypatch.setattr(assign_shoe, "_load_preferences", AsyncMock(return_value=[]))
     monkeypatch.setattr(
         assign_shoe,
         "recommend_shoe",

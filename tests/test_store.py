@@ -17,6 +17,7 @@ from app.store import (
     record_preference,
     save_processed,
     save_user,
+    set_explicit_preference,
 )
 from app.models import ProcessedActivity
 
@@ -66,6 +67,16 @@ async def test_processed_and_prefs(redis_client):
     prefs = await list_preferences(111)
     assert len(prefs) == 1
     assert prefs[0].accept_count == 2
+
+
+@pytest.mark.asyncio
+async def test_explicit_preference_replaces_same_run_type(redis_client):
+    await set_explicit_preference(111, "recovery", "g-asics", "ASICS")
+    await set_explicit_preference(111, "recovery", "g-puma", "PUMA")
+    prefs = await list_preferences(111)
+    recovery = [p for p in prefs if p.run_type == "recovery"]
+    assert len(recovery) == 1
+    assert recovery[0].shoe_id == "g-puma"
 
 
 @pytest.mark.asyncio
