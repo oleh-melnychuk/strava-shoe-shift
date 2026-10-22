@@ -6,6 +6,7 @@ from telegram import InlineKeyboardButton, InlineKeyboardMarkup, KeyboardButton,
 BTN_LINK = "Link Strava"
 BTN_SHOES = "Shoes"
 BTN_RECALC = "Recalc"
+BTN_SETUP = "Setup"
 BTN_PREFER = "Prefer"
 BTN_PREFS = "Prefs"
 BTN_STATUS = "Status"
@@ -15,7 +16,7 @@ MAIN_BUTTONS = (
     BTN_RECALC,
     BTN_SHOES,
     BTN_LINK,
-    BTN_PREFER,
+    BTN_SETUP,
     BTN_PREFS,
     BTN_STATUS,
 )
@@ -26,7 +27,7 @@ def main_menu_keyboard() -> ReplyKeyboardMarkup:
         [
             [KeyboardButton(BTN_RECALC), KeyboardButton(BTN_SHOES)],
             [KeyboardButton(BTN_LINK), KeyboardButton(BTN_STATUS)],
-            [KeyboardButton(BTN_PREFER), KeyboardButton(BTN_PREFS)],
+            [KeyboardButton(BTN_SETUP), KeyboardButton(BTN_PREFS)],
         ],
         resize_keyboard=True,
         is_persistent=True,
@@ -37,6 +38,7 @@ def prefs_actions_keyboard() -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         [
             [
+                InlineKeyboardButton("Redo setup", callback_data="menu:setup"),
                 InlineKeyboardButton("Clear prefs", callback_data="menu:prefs_clear"),
             ]
         ]
@@ -56,7 +58,7 @@ def home_inline_keyboard() -> InlineKeyboardMarkup:
                 InlineKeyboardButton("Status", callback_data="menu:status"),
             ],
             [
-                InlineKeyboardButton("Prefer", callback_data="menu:prefer"),
+                InlineKeyboardButton("Setup", callback_data="menu:setup"),
                 InlineKeyboardButton("Prefs", callback_data="menu:prefs"),
             ],
         ]

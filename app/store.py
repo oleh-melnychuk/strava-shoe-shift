@@ -4,7 +4,13 @@ import json
 from datetime import datetime, timezone
 
 from app.db import get_redis
-from app.models import PendingDecision, ProcessedActivity, ShoePreference, User
+from app.models import (
+    PendingDecision,
+    ProcessedActivity,
+    RunDistanceProfile,
+    ShoePreference,
+    User,
+)
 
 USER_KEY = "user:tg:{telegram_user_id}"
 STRAVA_INDEX = "idx:strava:{athlete_id}"
@@ -14,6 +20,8 @@ PENDING_KEY = "pending:{pending_id}"
 PENDING_SEQ = "pending:seq"
 PREF_KEY = "pref:{user_id}:{run_type}:{shoe_id}"
 USER_PREFS = "user:{user_id}:prefs"
+DIST_KEY = "dist:{user_id}:{run_type}"
+USER_DISTS = "user:{user_id}:dists"
 
 PENDING_TTL_SECONDS = 24 * 60 * 60
 
@@ -210,6 +218,54 @@ async def record_preference(
     pipe.sadd(USER_PREFS.format(user_id=user_id), key)
     await pipe.execute()
     return pref
+
+
+async def set_run_distance(
+    user_id: int,
+    run_type: str,
+    min_km: float | None,
+    max_km: float | None,
+    typical_km: float | None,
+) -> RunDistanceProfile:
+    r = await get_redis()
+    key = DIST_KEY.format(user_id=user_id, run_type=run_type)
+    profile = RunDistanceProfile(
+        user_id=user_id,
+        run_type=run_type,
+        min_km=min_km,
+        max_km=max_km,
+        typical_km=typical_km,
+    )
+    pipe = r.pipeline()
+    pipe.set(key, json.dumps(profile.to_dict()))
+    pipe.sadd(USER_DISTS.format(user_id=user_id), key)
+    await pipe.execute()
+    return profile
+
+
+async def list_run_distances(user_id: int) -> list[RunDistanceProfile]:
+    r = await get_redis()
+    keys = await r.smembers(USER_DISTS.format(user_id=user_id))
+    profiles: list[RunDistanceProfile] = []
+    for key in keys:
+        raw = await r.get(key)
+        if raw:
+            profiles.append(RunDistanceProfile.from_dict(json.loads(raw)))
+    return profiles
+
+
+async def clear_run_distances(user_id: int) -> int:
+    r = await get_redis()
+    set_key = USER_DISTS.format(user_id=user_id)
+    keys = await r.smembers(set_key)
+    if not keys:
+        return 0
+    pipe = r.pipeline()
+    for key in keys:
+        pipe.delete(key)
+    pipe.delete(set_key)
+    await pipe.execute()
+    return len(keys)
 
 
 async def set_explicit_preference(

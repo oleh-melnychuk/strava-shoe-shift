@@ -12,7 +12,7 @@ from google.genai import errors as genai_errors
 from google.genai import types
 from pydantic import BaseModel, Field
 
-from app.ai.classifier import classify_heuristic
+from app.ai.classifier import classify_by_user_distance, classify_heuristic
 from app.config import get_settings
 
 logger = logging.getLogger(__name__)
@@ -28,6 +28,9 @@ Primary evidence:
 - recent_activities: the athlete's last ~50 runs with name, distance, pace, HR, gear, and
   an inferred_run_type hint. Find which shoes they actually used for similar efforts.
 - usage_trends: aggregates from those recent runs (by_run_type counts per shoe).
+- user_run_type_distances: the user's regular distance range per run type from
+  onboarding (min_km/max_km/typical_km). Use it to classify when name/pace cues
+  are ambiguous — e.g. their 18 km run is a long run, their 6 km run is recovery.
 
 Rules:
 - Never invent a shoe_id; only use ids from the shoes list.
@@ -74,6 +77,7 @@ def build_recent_activity_context(
     shoe_names: dict[str, str],
     *,
     limit: int = 50,
+    run_type_distances: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     """Normalize the last N runs for the recommender."""
     rows: list[dict[str, Any]] = []
@@ -95,7 +99,7 @@ def build_recent_activity_context(
                 "workout_type": act.get("workout_type"),
                 "gear_id": gear_id,
                 "gear_name": shoe_names.get(gear_id) if gear_id else None,
-                "inferred_run_type": classify_heuristic(act),
+                "inferred_run_type": classify_heuristic(act, run_type_distances),
             }
         )
         if len(rows) >= limit:
@@ -182,6 +186,7 @@ def _build_user_payload(
     recent_activities: list[dict[str, Any]],
     usage_trends: list[dict[str, Any]],
     preferences: list[dict[str, Any]] | None = None,
+    run_type_distances: list[dict[str, Any]] | None = None,
 ) -> str:
     payload = {
         "activity": {
@@ -202,6 +207,7 @@ def _build_user_payload(
         },
         "shoes": shoes,
         "explicit_preferences": preferences or [],
+        "user_run_type_distances": run_type_distances or [],
         "recent_activities": recent_activities,
         "usage_trends": usage_trends,
         "instruction": (
@@ -307,6 +313,7 @@ def _apply_guards(
     shoes: list[dict[str, Any]],
     recent_activities: list[dict[str, Any]] | None = None,
     preferences: list[dict[str, Any]] | None = None,
+    run_type_distances: list[dict[str, Any]] | None = None,
 ) -> ShoeRecommendation:
     preferences = preferences or []
     valid_ids = {s["id"] for s in shoes}
@@ -316,14 +323,24 @@ def _apply_guards(
         recommendation.confidence = min(recommendation.confidence, 0.4)
         recommendation.reason += " (invalid shoe_id discarded)"
 
-    # AI said unknown, but similar recent runs point at a pinned run type.
+    # AI said unknown: try the user's regular distances, then similar runs.
     if recommendation.run_type == "unknown":
-        inferred = _infer_run_type_from_similar(
-            activity, recent_activities or [], preferences
-        )
-        if inferred:
-            recommendation.run_type = inferred
-            recommendation.reason += f" (type inferred as {inferred} from similar recent runs)"
+        distance_km = float(activity.get("distance") or 0) / 1000.0
+        by_distance = classify_by_user_distance(distance_km or None, run_type_distances)
+        if by_distance:
+            recommendation.run_type = by_distance
+            recommendation.reason += (
+                f" (type inferred as {by_distance} from your usual distance)"
+            )
+        else:
+            inferred = _infer_run_type_from_similar(
+                activity, recent_activities or [], preferences
+            )
+            if inferred:
+                recommendation.run_type = inferred
+                recommendation.reason += (
+                    f" (type inferred as {inferred} from similar recent runs)"
+                )
 
     # Explicit /prefer pin wins for its run type.
     pin = _pinned_shoe(recommendation.run_type, preferences)
@@ -357,6 +374,7 @@ async def recommend_shoe(
     recent_activities: list[dict[str, Any]],
     usage_trends: list[dict[str, Any]],
     preferences: list[dict[str, Any]] | None = None,
+    run_type_distances: list[dict[str, Any]] | None = None,
 ) -> ShoeRecommendation:
     preferences = preferences or []
     settings = get_settings()
@@ -375,6 +393,7 @@ async def recommend_shoe(
             recent_activities,
             reason="Heuristic from last runs (GEMINI_API_KEY not set).",
             preferences=preferences,
+            run_type_distances=run_type_distances,
         )
 
     # History/pin is already confident: don't pay for (or wait on) Gemini.
@@ -384,6 +403,7 @@ async def recommend_shoe(
         recent_activities,
         reason="History/pin pick (Gemini skipped).",
         preferences=preferences,
+        run_type_distances=run_type_distances,
     )
     if pre_pick.shoe_id and pre_pick.confidence >= HEURISTIC_SKIP_AI_CONFIDENCE:
         logger.info(
@@ -403,10 +423,13 @@ async def recommend_shoe(
             recent_activities,
             reason="Heuristic from last runs (Gemini models cooling down).",
             preferences=preferences,
+            run_type_distances=run_type_distances,
         )
 
     client = genai.Client(api_key=settings.gemini_api_key)
-    contents = _build_user_payload(activity, shoes, recent_activities, usage_trends, preferences)
+    contents = _build_user_payload(
+        activity, shoes, recent_activities, usage_trends, preferences, run_type_distances
+    )
 
     global _LAST_GOOD_MODEL
     last_error: str | None = None
@@ -415,7 +438,12 @@ async def recommend_shoe(
         try:
             recommendation = await _generate(client, model, contents)
             recommendation = _apply_guards(
-                recommendation, activity, shoes, recent_activities, preferences
+                recommendation,
+                activity,
+                shoes,
+                recent_activities,
+                preferences,
+                run_type_distances,
             )
             _LAST_GOOD_MODEL = model
             _MODEL_COOLDOWN.pop(model, None)
@@ -451,6 +479,7 @@ async def recommend_shoe(
         recent_activities,
         reason=f"Heuristic from last runs (Gemini busy: {last_error})",
         preferences=preferences,
+        run_type_distances=run_type_distances,
     )
 
 
@@ -460,9 +489,10 @@ def _heuristic_from_history(
     recent_activities: list[dict[str, Any]],
     reason: str = "Heuristic from last runs.",
     preferences: list[dict[str, Any]] | None = None,
+    run_type_distances: list[dict[str, Any]] | None = None,
 ) -> ShoeRecommendation:
     preferences = preferences or []
-    run_type = classify_heuristic(activity)
+    run_type = classify_heuristic(activity, run_type_distances)
     if run_type == "unknown":
         run_type = _infer_run_type_from_similar(activity, recent_activities, preferences) or run_type
     pin = _pinned_shoe(run_type, preferences)

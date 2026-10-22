@@ -115,10 +115,9 @@ async def strava_oauth_callback(
     user.refresh_token = token_data["refresh_token"]
     user.token_expires_at = token_data["expires_at"]
     await save_user(user)
-    chat_id = user.telegram_chat_id
 
     try:
-        await resolve_link_notify(chat_id, athlete_name, settings.telegram_bot_token)
+        await resolve_link_notify(user, athlete_name, settings.telegram_bot_token)
     except Exception:
         logger.exception("Failed to notify Telegram after OAuth")
 

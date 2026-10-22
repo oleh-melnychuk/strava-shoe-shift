@@ -18,6 +18,7 @@ class User:
     refresh_token: str | None = None
     token_expires_at: int | None = None
     skip_if_geared: bool = True
+    onboarded_at: str | None = None
     created_at: str = field(default_factory=lambda: _utcnow().isoformat())
     updated_at: str = field(default_factory=lambda: _utcnow().isoformat())
 
@@ -39,6 +40,7 @@ class User:
             refresh_token=data.get("refresh_token"),
             token_expires_at=int(data["token_expires_at"]) if data.get("token_expires_at") is not None else None,
             skip_if_geared=bool(data.get("skip_if_geared", True)),
+            onboarded_at=data.get("onboarded_at"),
             created_at=data.get("created_at") or _utcnow().isoformat(),
             updated_at=data.get("updated_at") or _utcnow().isoformat(),
         )
@@ -99,6 +101,35 @@ class PendingDecision:
             reason=data.get("reason"),
             resolved=bool(data.get("resolved", False)),
             created_at=data.get("created_at") or _utcnow().isoformat(),
+        )
+
+
+@dataclass
+class RunDistanceProfile:
+    """User's regular distance range for a run type (from onboarding)."""
+
+    user_id: int
+    run_type: str
+    min_km: float | None = None
+    max_km: float | None = None
+    typical_km: float | None = None
+    updated_at: str = field(default_factory=lambda: _utcnow().isoformat())
+
+    def to_dict(self) -> dict[str, Any]:
+        return asdict(self)
+
+    @classmethod
+    def from_dict(cls, data: dict[str, Any]) -> RunDistanceProfile:
+        def _f(value: Any) -> float | None:
+            return float(value) if value is not None else None
+
+        return cls(
+            user_id=int(data["user_id"]),
+            run_type=data["run_type"],
+            min_km=_f(data.get("min_km")),
+            max_km=_f(data.get("max_km")),
+            typical_km=_f(data.get("typical_km")),
+            updated_at=data.get("updated_at") or _utcnow().isoformat(),
         )
 
 

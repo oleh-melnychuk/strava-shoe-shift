@@ -44,6 +44,35 @@ def test_history_heuristic_uses_same_type_shoe():
     assert result.confidence >= 0.55
 
 
+def test_history_heuristic_uses_user_distance_then_pin():
+    shoes = [
+        {"id": "g-boston", "name": "Boston", "distance_meters": 1, "retired": False},
+        {"id": "g-puma", "name": "Puma", "distance_meters": 1, "retired": False},
+    ]
+    prefs = [
+        {
+            "run_type": "recovery",
+            "shoe_id": "g-puma",
+            "shoe_name": "Puma",
+            "accept_count": 5,
+            "reject_count": 0,
+        }
+    ]
+    distances = [
+        {"run_type": "recovery", "min_km": 5.0, "max_km": 8.0, "typical_km": 6.5},
+    ]
+    result = _heuristic_from_history(
+        {"name": "Afternoon Run", "distance": 8000},
+        shoes,
+        [],
+        preferences=prefs,
+        run_type_distances=distances,
+    )
+    assert result.run_type == "recovery"
+    assert result.shoe_id == "g-puma"
+    assert result.confidence >= 0.9
+
+
 def test_guards_force_explicit_pin_for_recovery():
     shoes = [
         {"id": "g-boston", "name": "Boston"},

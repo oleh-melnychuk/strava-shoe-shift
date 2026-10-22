@@ -18,6 +18,7 @@ from app.store import (
     create_pending,
     get_processed,
     list_preferences,
+    list_run_distances,
     save_processed,
 )
 from app.strava.client import get_client_for_user, get_user_by_strava_athlete_id
@@ -150,7 +151,11 @@ def _shoe_payload(shoes: list[dict[str, Any]]) -> list[dict[str, Any]]:
     ]
 
 
-def _usage_trends(activities: list[dict[str, Any]], shoe_names: dict[str, str]) -> list[dict[str, Any]]:
+def _usage_trends(
+    activities: list[dict[str, Any]],
+    shoe_names: dict[str, str],
+    run_type_distances: list[dict[str, Any]] | None = None,
+) -> list[dict[str, Any]]:
     stats: dict[str, dict[str, Any]] = defaultdict(
         lambda: {
             "count": 0,
@@ -168,7 +173,7 @@ def _usage_trends(activities: list[dict[str, Any]], shoe_names: dict[str, str]) 
         bucket = stats[gear_id]
         bucket["count"] += 1
         bucket["distance_m"] += float(act.get("distance") or 0)
-        run_type = classify_heuristic(act)
+        run_type = classify_heuristic(act, run_type_distances)
         bucket["by_run_type"][run_type] += 1
         if len(bucket["recent_names"]) < 5:
             bucket["recent_names"].append(act.get("name"))
@@ -199,6 +204,19 @@ async def _load_preferences(user_id: int) -> list[dict[str, Any]]:
             "accept_count": r.accept_count,
             "reject_count": r.reject_count,
             "updated_at": r.updated_at,
+        }
+        for r in rows
+    ]
+
+
+async def _load_run_distances(user_id: int) -> list[dict[str, Any]]:
+    rows = await list_run_distances(user_id)
+    return [
+        {
+            "run_type": r.run_type,
+            "min_km": r.min_km,
+            "max_km": r.max_km,
+            "typical_km": r.typical_km,
         }
         for r in rows
     ]
@@ -357,13 +375,19 @@ async def process_activity_for_user(user: User, activity_id: int, *, force: bool
         for a in recent_raw
         if (a.get("type") or a.get("sport_type")) in {"Run", "TrailRun", "VirtualRun"}
     ][:RECENT_HISTORY_LIMIT]
-    recent_activities = build_recent_activity_context(
-        recent_runs, shoe_names, limit=RECENT_HISTORY_LIMIT
-    )
-    trends = _usage_trends(recent_runs, shoe_names)
     preferences = await _load_preferences(user.id)
+    run_type_distances = await _load_run_distances(user.id)
+    recent_activities = build_recent_activity_context(
+        recent_runs,
+        shoe_names,
+        limit=RECENT_HISTORY_LIMIT,
+        run_type_distances=run_type_distances,
+    )
+    trends = _usage_trends(recent_runs, shoe_names, run_type_distances)
 
-    recommendation = await recommend_shoe(activity, shoes, recent_activities, trends, preferences)
+    recommendation = await recommend_shoe(
+        activity, shoes, recent_activities, trends, preferences, run_type_distances
+    )
     run_type = normalize_run_type(recommendation.run_type)
     shoe_id = recommendation.shoe_id
     confidence = float(recommendation.confidence)

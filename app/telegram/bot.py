@@ -18,7 +18,6 @@ from app.config import Settings, get_settings
 from app.store import (
     clear_preferences,
     get_last_processed_for_user,
-    list_preferences,
     upsert_telegram_user,
 )
 from app.strava.client import get_client_for_user, get_user_by_telegram_id
@@ -26,15 +25,21 @@ from app.strava.oauth import build_authorize_url
 from app.telegram.handlers import prefer_callback, recalc_callback, shoe_callback
 from app.telegram.keyboards import (
     BTN_LINK,
-    BTN_PREFER,
     BTN_PREFS,
     BTN_RECALC,
+    BTN_SETUP,
     BTN_SHOES,
     BTN_STATUS,
     MAIN_BUTTONS,
     home_inline_keyboard,
     main_menu_keyboard,
     prefs_actions_keyboard,
+)
+from app.telegram.onboarding import (
+    format_profile_summary,
+    onboarding_callback,
+    setup_command,
+    start_onboarding,
 )
 
 logger = logging.getLogger(__name__)
@@ -46,11 +51,23 @@ RECALC_LIST_LIMIT = 10
 async def start_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
     if not update.effective_user or not update.message:
         return
+    user = await get_user_by_telegram_id(update.effective_user.id)
+    linked = bool(user and user.access_token)
+    onboarded = bool(user and user.onboarded_at)
+    extra = ""
+    if linked and not onboarded:
+        extra = (
+            "\nTap <b>Setup</b> to pin a favorite shoe and typical distance "
+            "for each run type — that's how I classify unnamed runs.\n"
+        )
+    elif not linked:
+        extra = "\nStart by tapping <b>Link Strava</b>.\n"
     await update.message.reply_text(
         "Strava Shoe Shift\n\n"
-        "I watch new runs, classify them from your last 50 activities, "
-        "and assign shoes. If I'm unsure, I'll ask.\n\n"
+        "I watch new runs, classify them (your setup + last 50 activities), "
+        f"and assign shoes. If I'm unsure, I'll ask.{extra}\n"
         "Use the buttons below:",
+        parse_mode="HTML",
         reply_markup=main_menu_keyboard(),
     )
     await update.message.reply_text(
@@ -180,29 +197,15 @@ async def prefs_command(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     if args and args[0] == "clear":
         removed = await clear_preferences(user.id)
         await update.message.reply_text(
-            f"Cleared {removed} preference(s).\n"
-            "Shoe picks use your last 50 Strava runs.",
+            f"Cleared {removed} shoe pin(s).\n"
+            "Typical distances are unchanged. Tap Setup to redo everything.",
             reply_markup=main_menu_keyboard(),
         )
         return
 
-    rows = await list_preferences(user.id)
-    if not rows:
-        await update.message.reply_text(
-            "No stored preferences.\n"
-            "Assignments use your /prefer pins, then your last 50 Strava runs.",
-            reply_markup=main_menu_keyboard(),
-        )
-        return
-
-    lines = [
-        "Pinned via /prefer (wins for its run type):",
-    ]
-    for row in sorted(rows, key=lambda r: (r.run_type, -r.accept_count)):
-        name = row.shoe_name or row.shoe_id
-        lines.append(f"• {row.run_type} → {name} (✓{row.accept_count} / ✗{row.reject_count})")
+    summary = await format_profile_summary(user.id)
     await update.message.reply_text(
-        "\n".join(lines),
+        summary,
         reply_markup=prefs_actions_keyboard(),
     )
 
@@ -316,8 +319,8 @@ async def menu_text_handler(update: Update, context: ContextTypes.DEFAULT_TYPE) 
         await shoes_command(update, context)
     elif text == BTN_RECALC:
         await recalc_command(update, context)
-    elif text == BTN_PREFER:
-        await prefer_command(update, context)
+    elif text == BTN_SETUP:
+        await setup_command(update, context)
     elif text == BTN_PREFS:
         await prefs_command(update, context)
     elif text == BTN_STATUS:
@@ -343,9 +346,17 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
             return
         removed = await clear_preferences(user.id)
         await query.edit_message_text(
-            f"Cleared {removed} preference(s).\n"
-            "Shoe picks use your last 50 Strava runs."
+            f"Cleared {removed} shoe pin(s).\n"
+            "Typical distances are unchanged. Tap Setup to redo everything."
         )
+        return
+
+    if action == "setup":
+        user = await get_user_by_telegram_id(tg_user_id)
+        if not user:
+            await query.edit_message_text("Not registered. Send /start.")
+            return
+        await start_onboarding(user, query=query, bot=context.bot)
         return
 
     if action == "link":
@@ -448,21 +459,8 @@ async def menu_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
                 reply_markup=main_menu_keyboard(),
             )
             return
-        rows = await list_preferences(user.id)
-        if not rows:
-            await message.reply_text(
-                "No stored preferences.\n"
-                "Assignments use your /prefer pins, then your last 50 Strava runs.",
-                reply_markup=main_menu_keyboard(),
-            )
-            return
-        lines = ["Pinned via /prefer (wins for its run type):"]
-        for row in sorted(rows, key=lambda r: (r.run_type, -r.accept_count)):
-            name = row.shoe_name or row.shoe_id
-            lines.append(
-                f"• {row.run_type} → {name} (✓{row.accept_count} / ✗{row.reject_count})"
-            )
-        await message.reply_text("\n".join(lines), reply_markup=prefs_actions_keyboard())
+        summary = await format_profile_summary(user.id)
+        await message.reply_text(summary, reply_markup=prefs_actions_keyboard())
         return
 
     if action == "status":
@@ -502,11 +500,13 @@ def build_application(settings: Settings | None = None) -> Application:
     app.add_handler(CommandHandler("shoes", shoes_command))
     app.add_handler(CommandHandler("recalc", recalc_command))
     app.add_handler(CommandHandler("prefer", prefer_command))
+    app.add_handler(CommandHandler("setup", setup_command))
     app.add_handler(CommandHandler("prefs", prefs_command))
     app.add_handler(CommandHandler("status", status_command))
     app.add_handler(CallbackQueryHandler(shoe_callback, pattern=r"^shoe:"))
     app.add_handler(CallbackQueryHandler(recalc_callback, pattern=r"^recalc:"))
     app.add_handler(CallbackQueryHandler(prefer_callback, pattern=r"^prefer:"))
+    app.add_handler(CallbackQueryHandler(onboarding_callback, pattern=r"^onb:"))
     app.add_handler(CallbackQueryHandler(menu_callback, pattern=r"^menu:"))
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, menu_text_handler))
     return app

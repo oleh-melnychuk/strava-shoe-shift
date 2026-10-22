@@ -14,10 +14,12 @@ from app.store import (
     get_user_by_strava_athlete_id,
     get_user_by_telegram_id,
     list_preferences,
+    list_run_distances,
     record_preference,
     save_processed,
     save_user,
     set_explicit_preference,
+    set_run_distance,
 )
 from app.models import ProcessedActivity
 
@@ -77,6 +79,21 @@ async def test_explicit_preference_replaces_same_run_type(redis_client):
     recovery = [p for p in prefs if p.run_type == "recovery"]
     assert len(recovery) == 1
     assert recovery[0].shoe_id == "g-puma"
+
+
+@pytest.mark.asyncio
+async def test_run_distance_roundtrip(redis_client):
+    await set_run_distance(111, "recovery", 5.0, 8.0, 6.5)
+    await set_run_distance(111, "long", 16.0, 22.0, 19.0)
+    profiles = {p.run_type: p for p in await list_run_distances(111)}
+    assert profiles["recovery"].min_km == 5.0
+    assert profiles["recovery"].max_km == 8.0
+    assert profiles["long"].typical_km == 19.0
+    # Overwrite the same type.
+    await set_run_distance(111, "recovery", 0.0, 5.0, 4.0)
+    profiles = {p.run_type: p for p in await list_run_distances(111)}
+    assert profiles["recovery"].max_km == 5.0
+    assert len(profiles) == 2
 
 
 @pytest.mark.asyncio

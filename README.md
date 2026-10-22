@@ -60,19 +60,19 @@ python scripts/create_strava_webhook.py view
 
 ### 4. Use the bot
 
-1. Message the bot `/start` then `/link`
+1. Message the bot `/start` then **Link Strava**
 2. Complete Strava OAuth in the browser
-3. Upload a run (or create an activity) on Strava
-4. Bot assigns shoes or asks you to confirm
+3. **Setup** — pick a favorite shoe and typical distance for recovery, tempo, intervals, long, and race
+4. Upload a run on Strava; the bot assigns shoes or asks you to confirm
 
 Use the on-screen buttons (or `/start` to show the menu again):
 
+- **Setup** — favorite shoe + usual distance per run type (also runs after you link Strava)
 - **Recalc** — pick a recent run and re-assign shoes
 - **Shoes** / **Link Strava** / **Status**
-- **Prefer** — optional manual pin (history remains primary)
-- **Prefs** — view stored prefs; tap **Clear prefs** to wipe them
+- **Prefs** — view pins and distances; **Redo setup** or **Clear prefs**
 
-Assignment uses your **last 50 Strava runs** (pace/HR/name + shoes). Slash commands still work as aliases.
+Assignment uses your **setup** (pins + distances) first, then your **last 50 Strava runs**. `/prefer` still pins one run type. Slash commands (`/setup`, `/prefer`, …) work as aliases.
 
 ## Configuration
 
@@ -102,7 +102,8 @@ All app state lives in Redis (no SQLite/Postgres):
 | `idx:strava:{athlete_id}` | Lookup Telegram user by Strava athlete |
 | `processed:{activity_id}` | Processed activity record |
 | `pending:{id}` | Confirmation prompt (24h TTL) |
-| `pref:{user}:{run_type}:{shoe_id}` | Learned shoe preferences |
+| `pref:{user}:{run_type}:{shoe_id}` | Pinned shoe per run type |
+| `dist:{user}:{run_type}` | Typical distance range per run type |
 
 ## Production
 

@@ -11,6 +11,7 @@ from telegram.ext import ContextTypes
 from telegram import InlineKeyboardButton, InlineKeyboardMarkup
 
 from app.ai.classifier import SETTABLE_RUN_TYPES, normalize_run_type
+from app.models import User
 from app.services.assign_shoe import apply_shoe_choice, process_activity_for_user
 from app.store import (
     get_pending,
@@ -215,15 +216,7 @@ async def shoe_callback(update: Update, context: ContextTypes.DEFAULT_TYPE) -> N
     )
 
 
-async def resolve_link_notify(telegram_chat_id: int, athlete_name: str, bot_token: str) -> None:
-    from telegram import Bot
+async def resolve_link_notify(user: User, athlete_name: str, bot_token: str) -> None:
+    from app.telegram.onboarding import start_onboarding_after_link
 
-    bot = Bot(token=bot_token)
-    await bot.send_message(
-        chat_id=telegram_chat_id,
-        text=(
-            f"Linked Strava account for <b>{html.escape(athlete_name)}</b>. "
-            "I'll assign shoes on new runs."
-        ),
-        parse_mode="HTML",
-    )
+    await start_onboarding_after_link(user, athlete_name, bot_token)
